@@ -1,8 +1,8 @@
 # R36S LED Control
 
 A tiny TUI tool for the **R36S** (and clones) running **dArkOS** / **dArkOS-RE** / **dArkOSen** /
-**ArkOS**-derived firmwares. Lets you pick how the status LED behaves at low battery —
-by device family (Clone, R36S, SoySauce) — or hand control back to the PMIC.
+**ArkOS**-derived firmwares. Lets you pick how the status LED behaves at low battery,
+by device family (Clone, R36S, SoySauce) or hand control back to the PMIC.
 
 No config files, no logs, no system files touched. Everything lives under
 `/roms/tools/`.
@@ -11,18 +11,18 @@ No config files, no logs, no system files touched. Everything lives under
 
 ## Features
 
-- **Variant-aware menu** — Clone, R36S, SoySauce, each with its own set of profiles
-- **Labels** — e.g. `Blue >=30%  |  Purple 11-29%  |  Red <=10%`
-- **One-tap Apply** — copies the chosen script to `/usr/local/bin/batt_life_warning.py`
+- **Variant-aware menu** Clone, R36S, SoySauce, each with its own set of profiles
+- **Labels**  e.g. `Blue >=30%  |  Purple 11-29%  |  Red <=10%`
+- **One-tap Apply**  copies the chosen script to `/usr/local/bin/batt_life_warning.py`
   and restarts `batt_led.service`
-- **Diagnostic wizard** — tests the GPIO, asks what you see, and generates a custom
+- **Diagnostic wizard**  tests the GPIO, asks what you see, and generates a custom
   profile for your specific device
-- **Custom profiles** — generated profiles are saved and can be managed or deleted
+- **Custom profiles**  generated profiles are saved and can be managed or deleted
   from inside the tool
-- **Remove LED** — stops the service and deletes the installed script, letting the
+- **Remove LED**  stops the service and deletes the installed script, letting the
   PMIC control the LED again
-- **Self-contained** — no `/etc/r36_config.ini`, no `ogage`, no audio, no gamma
-- **Gamepad-driven** — uses `gptokeyb` with the firmware's existing keymap
+- **Self-contained**  no `/etc/r36_config.ini`, no `ogage`, no audio, no gamma
+- **Gamepad-driven**  uses `gptokeyb` with the firmware's existing keymap
 
 ---
 
