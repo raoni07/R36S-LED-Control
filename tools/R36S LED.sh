@@ -11,7 +11,14 @@ dialog --clear
 
 WIDTH=58
 HEIGHT=18
-GPIO_PIN=77
+NAME_WIDTH=16
+PROFILE_TOTAL_CELLS=20
+
+PROBE_PINS=(0 1 17 77)
+GPIO_ROOT="${GPIO_ROOT:-/sys/class/gpio}"
+BATT_DIR="${BATT_DIR:-/sys/class/power_supply/battery}"
+OBS_FILE=""
+WIZ_PINS=""
 
 sudo setfont /usr/share/consolefonts/Lat15-TerminusBold20x10.psf.gz 2>/dev/null
 
@@ -19,9 +26,14 @@ pgrep -f gptokeyb | sudo xargs kill -9 2>/dev/null
 printf "\033c" > /dev/tty1
 printf "Starting R36S LED Control..." > /dev/tty1
 
-SCRIPT_DIR="/roms/tools/R36S_LED"
-TARGET_SCRIPT="/usr/local/bin/batt_life_warning.py"
+SCRIPT_DIR="${SCRIPT_DIR:-/roms/tools/R36S_LED}"
+TARGET_SCRIPT="${TARGET_SCRIPT:-/usr/local/bin/batt_life_warning.py}"
+CORE_NAME="batt_led_core.py"
+CORE_SRC="$SCRIPT_DIR/$CORE_NAME"
+CORE_DST="$(dirname "$TARGET_SCRIPT")/$CORE_NAME"
 SERVICE="batt_led.service"
+
+mkdir -p "$SCRIPT_DIR" 2>/dev/null
 
 detect_model() {
   local m=""
@@ -43,27 +55,115 @@ detect_model() {
   echo "$m"
 }
 
+service_exists() {
+  systemctl list-unit-files 2>/dev/null | grep -q "^${SERVICE}"
+}
+
+color_code() {
+  case "$1" in
+    red)                 echo 1 ;;
+    green)               echo 2 ;;
+    yellow|orange)       echo 3 ;;
+    blue)                echo 4 ;;
+    pink|purple|magenta) echo 5 ;;
+    cyan)                echo 6 ;;
+    white)               echo 7 ;;
+    black|off)           echo 0 ;;
+    *)                   echo 7 ;;
+  esac
+}
+
+color_display() {
+  case "$1" in
+    green)       echo "Green" ;;
+    blue)        echo "Blue" ;;
+    red)         echo "Red" ;;
+    yellow)      echo "Yellow" ;;
+    orange)      echo "Orange" ;;
+    white)       echo "White" ;;
+    pink)        echo "Pink" ;;
+    purple)      echo "Purple" ;;
+    off)         echo "Off" ;;
+    *)           echo "$1" ;;
+  esac
+}
+
+draw_bar() {
+  local color="$1"
+  local cells="$2"
+  local color2="${3:-}"
+  local s=""
+  local i
+
+  [ "$cells" -lt 1 ] && cells=1
+
+  if [ -n "$color2" ]; then
+    local c1code c2code
+    c1code=$(color_code "$color")
+    c2code=$(color_code "$color2")
+    local i2=0
+    while [ "$i2" -lt "$cells" ]; do
+      local block_end=$((i2 + 2))
+      [ "$block_end" -gt "$cells" ] && block_end=$cells
+      local ccode
+      if [ $(( (i2 / 2) % 2 )) -eq 0 ]; then
+        ccode="$c1code"
+      else
+        ccode="$c2code"
+      fi
+      local block=""
+      local j
+      for ((j=i2; j<block_end; j++)); do
+        block+="█"
+      done
+      s+="\Z${ccode}${block}\Zn"
+      i2=$block_end
+    done
+    printf '%s' "$s"
+    return
+  fi
+
+  for ((i=0; i<cells; i++)); do s+="█"; done
+  if [ "$color" = "off" ]; then
+    printf '%s' "\Z0${s}\Zn"
+  else
+    printf '%s' "\Z$(color_code "$color")${s}\Zn"
+  fi
+}
+
+truncate_name() {
+  local n="$1"
+  local max="${2:-$NAME_WIDTH}"
+  if [ ${#n} -gt "$max" ]; then
+    printf '%s..' "${n:0:$((max-2))}"
+  else
+    printf '%s' "$n"
+  fi
+}
+
 pretty_name() {
   case "$1" in
-    Clone_Blue_30_Purple_10_Red.py)   echo "Blue >=30%  |  Purple 11-29%  |  Red <=10%" ;;
-    Clone_Off_10_Red.py)              echo "Off >=11%  |  Red <=10%" ;;
-    Clone_Off_30_Purple_10_Red.py)    echo "Off >=30%  |  Purple 11-29%  |  Red <=10%" ;;
-    Clone_PMIC_Controlled.py)         echo "PMIC controls LED (no software)" ;;
-    R36S_Green_10_Red.py)             echo "Off >=11%  |  Warning LED <=10%" ;;
-    R36S_Green_20_Red.py)             echo "Off >=21%  |  Warning LED <=20%" ;;
-    R36S_Green_30_Red.py)             echo "Off >=31%  |  Warning LED <=30%" ;;
-    R36S_PMIC_Controlled.py)          echo "PMIC controls LED (no software)" ;;
-    SoySauce_Blue_30_Pink_10_Red.py)  echo "Blue >=30%  |  Pink 11-29%  |  Red <=10%" ;;
-    SoySauce_Off_10_Red.py)           echo "Off >=11%  |  Red <=10%" ;;
-    SoySauce_Off_30_Pink_10_Red.py)   echo "Off >=30%  |  Pink 11-29%  |  Red <=10%" ;;
-    SoySauce_PMIC_Controlled.py)      echo "PMIC controls LED (no software)" ;;
+    Clone_Blue_30_Purple_10_Red.py)   echo "Red <=10%  |  Purple 11-29%  |  Blue >=30%" ;;
+    Clone_Off_10_Red.py)              echo "Red <=10%  |  Off >=11%" ;;
+    Clone_Off_30_Purple_10_Red.py)    echo "Red <=10%  |  Purple 11-29%  |  Off >=30%" ;;
+    Clone_PMIC_Controlled.py)         echo "Device default (no software control)" ;;
+    R36S_Green_10_Red.py)             echo "Warning <=10%  |  Off >=11%" ;;
+    R36S_Green_20_Red.py)             echo "Warning <=20%  |  Off >=21%" ;;
+    R36S_Green_30_Red.py)             echo "Warning <=30%  |  Off >=31%" ;;
+    R36S_PMIC_Controlled.py)          echo "Device default (no software control)" ;;
+    SoySauce_Blue_30_Pink_10_Red.py)  echo "Red <=10%  |  Pink 11-29%  |  Blue >=30%" ;;
+    SoySauce_Off_10_Red.py)           echo "Red <=10%  |  Off >=11%" ;;
+    SoySauce_Off_30_Pink_10_Red.py)   echo "Red <=10%  |  Pink 11-29%  |  Off >=30%" ;;
+    SoySauce_PMIC_Controlled.py)      echo "Device default (no software control)" ;;
     Custom_*.py)
       local b="${1%.py}"; b="${b#Custom_}"
-      local thr ok low
-      thr=$(echo "$b" | cut -d_ -f1)
-      ok=$(echo "$b"  | cut -d_ -f2)
-      low=$(echo "$b" | cut -d_ -f4)
-      echo "Th ${thr}%  |  ${ok}  ->  ${low}"
+      local parts
+      IFS='_' read -ra parts <<< "$b"
+      if [ ${#parts[@]} -ge 5 ]; then
+        echo "${parts[2]} > ${parts[3]} > ${parts[4]}  (${parts[0]}/${parts[1]}%)"
+      else
+        echo "$b"
+      fi
       ;;
     *)                                echo "$1" ;;
   esac
@@ -71,33 +171,142 @@ pretty_name() {
 
 short_name() {
   case "$1" in
-    Clone_Blue_30_Purple_10_Red)  echo "Clone - Blue/Purple/Red" ;;
-    Clone_Off_10_Red)             echo "Clone - Off/Red" ;;
-    Clone_Off_30_Purple_10_Red)   echo "Clone - Off/Purple/Red" ;;
-    Clone_PMIC_Controlled)        echo "Clone - PMIC" ;;
-    R36S_Green_10_Red)            echo "R36S - Warn 10%" ;;
-    R36S_Green_20_Red)            echo "R36S - Warn 20%" ;;
-    R36S_Green_30_Red)            echo "R36S - Warn 30%" ;;
-    R36S_PMIC_Controlled)         echo "R36S - PMIC" ;;
-    SoySauce_Blue_30_Pink_10_Red) echo "SoySauce - Blue/Pink/Red" ;;
-    SoySauce_Off_10_Red)          echo "SoySauce - Off/Red" ;;
-    SoySauce_Off_30_Pink_10_Red)  echo "SoySauce - Off/Pink/Red" ;;
-    SoySauce_PMIC_Controlled)     echo "SoySauce - PMIC" ;;
-    Custom_*)                     echo "$1" ;;
+    Clone_Blue_30_Purple_10_Red)  echo "Red/Purple/Blue" ;;
+    Clone_Off_10_Red)             echo "Red/Off" ;;
+    Clone_Off_30_Purple_10_Red)   echo "Red/Purple/Off" ;;
+    Clone_PMIC_Controlled)        echo "Device default" ;;
+    R36S_Green_10_Red)            echo "Warning/Off @10%" ;;
+    R36S_Green_20_Red)            echo "Warning/Off @20%" ;;
+    R36S_Green_30_Red)            echo "Warning/Off @30%" ;;
+    R36S_PMIC_Controlled)         echo "Device default" ;;
+    SoySauce_Blue_30_Pink_10_Red) echo "Red/Pink/Blue" ;;
+    SoySauce_Off_10_Red)          echo "Red/Off" ;;
+    SoySauce_Off_30_Pink_10_Red)  echo "Red/Pink/Off" ;;
+    SoySauce_PMIC_Controlled)     echo "Device default" ;;
+    Custom_*)
+      local out="${1#Custom_}"
+      case "$out" in *+*) out="$out [blink]" ;; esac
+      echo "$out"
+      ;;
     *)                            echo "$1" ;;
   esac
 }
 
-current_led() {
-  [ ! -f "$TARGET_SCRIPT" ] && { echo "None (PMIC)"; return; }
+current_file() {
+  [ ! -f "$TARGET_SCRIPT" ] && return
   for f in "$SCRIPT_DIR"/*.py; do
     [ -f "$f" ] || continue
     if cmp -s "$f" "$TARGET_SCRIPT"; then
-      short_name "$(basename "$f" .py)"
+      basename "$f"
       return
     fi
   done
-  echo "Custom (unknown)"
+}
+
+profile_zones() {
+  local f="$1"
+  case "$f" in
+    Clone_Blue_30_Purple_10_Red.py)   echo "blue:30 purple:10 red:0" ;;
+    Clone_Off_10_Red.py)              echo "off:10 red:0" ;;
+    Clone_Off_30_Purple_10_Red.py)    echo "off:30 purple:10 red:0" ;;
+    R36S_Green_10_Red.py)             echo "off:10 red:0" ;;
+    R36S_Green_20_Red.py)             echo "off:20 red:0" ;;
+    R36S_Green_30_Red.py)             echo "off:30 red:0" ;;
+    SoySauce_Blue_30_Pink_10_Red.py)  echo "blue:30 purple:10 red:0" ;;
+    SoySauce_Off_10_Red.py)           echo "off:10 red:0" ;;
+    SoySauce_Off_30_Pink_10_Red.py)   echo "off:30 purple:10 red:0" ;;
+    Clone_PMIC_Controlled.py)         ;;
+    R36S_PMIC_Controlled.py)          ;;
+    SoySauce_PMIC_Controlled.py)      ;;
+    Custom_*.py)
+      local b="${f%.py}"; b="${b#Custom_}"
+      local parts
+      IFS='_' read -ra parts <<< "$b"
+      if [ ${#parts[@]} -ge 5 ]; then
+        echo "${parts[2]}:${parts[0]} ${parts[3]}:${parts[1]} ${parts[4]}:0"
+      fi
+      ;;
+  esac
+}
+
+profile_bar_core() {
+  local zones="$1"
+  local -a zc=() zt=()
+  local z
+  for z in $zones; do
+    zc+=("${z%%:*}")
+    zt+=("${z##*:}")
+  done
+
+  local n=${#zc[@]}
+
+  if [ "$n" -eq 2 ]; then
+    local t0="${zt[0]}"
+    local vthr=30
+    [ "$t0" -ge 30 ] && vthr=$((t0 + 20))
+    [ "$vthr" -gt 90 ] && vthr=90
+    zc=("${zc[0]}" "${zc[0]}" "${zc[1]}")
+    zt=("$vthr" "$t0" "${zt[1]}")
+    n=3
+  fi
+
+  local -a rc=() rt=()
+  local i
+  for ((i=n-1; i>=0; i--)); do
+    rc+=("${zc[$i]}")
+    rt+=("${zt[$i]}")
+  done
+
+  for ((i=0; i<n; i++)); do
+    local c="${rc[$i]}"
+    local c1="${c%%+*}"
+    local c2=""
+    [[ "$c" == *+* ]] && c2="${c##*+}"
+    local from="${rt[$i]}"
+    local to
+    if [ $((i+1)) -lt "$n" ]; then
+      to="${rt[$((i+1))]}"
+    else
+      to=100
+    fi
+    local range=$((to - from))
+    [ "$range" -lt 0 ] && range=0
+    local cells=$((range * PROFILE_TOTAL_CELLS / 100))
+    [ "$cells" -lt 1 ] && cells=1
+    if [ -n "$c2" ]; then
+      printf '%s' "$(draw_bar "$c1" "$cells" "$c2")"
+    else
+      printf '%s' "$(draw_bar "$c1" "$cells")"
+    fi
+    if [ $((i+1)) -lt "$n" ]; then
+      printf ' %2d%% ' "${rt[$((i+1))]}"
+    fi
+  done
+}
+
+profile_line() {
+  local f="$1"
+  local name
+  name=$(truncate_name "$2")
+  local zones
+  zones=$(profile_zones "$f")
+  if [ -z "$zones" ]; then
+    printf '%s' "$name"
+    return
+  fi
+  printf '%-*s ' "$NAME_WIDTH" "$name"
+  profile_bar_core "$zones"
+}
+
+profile_swatches() {
+  local f="$1"
+  local zones
+  zones=$(profile_zones "$f")
+  if [ -z "$zones" ]; then
+    printf '%s' "\Zn[ Device default ]\Zn"
+    return
+  fi
+  profile_bar_core "$zones"
 }
 
 ExitMenu() {
@@ -107,38 +316,76 @@ ExitMenu() {
   exit 0
 }
 
+ConfirmApply() {
+  local f="$1"
+  dialog --colors --title " Confirm " --yesno \
+"\nApply this profile?
+
+\Zb$(pretty_name "$f")\Zn" \
+    11 $WIDTH > /dev/tty1
+}
+
 ApplyLED() {
   local file="$1"
-  dialog --colors --infobox "\nApplying:\n$(pretty_name "$file")" 6 $WIDTH > /dev/tty1
 
-  sudo systemctl stop "$SERVICE" 2>/dev/null
-  sleep 1
+  if [ ! -f "$SCRIPT_DIR/$file" ] || [ ! -f "$CORE_SRC" ]; then
+    dialog --colors --title " Error " --msgbox \
+"\n\ZbMissing files.\Zn\n\nNeed $file\nand $CORE_NAME in\n$SCRIPT_DIR" 11 $WIDTH > /dev/tty1
+    return 1
+  fi
+
+  dialog --colors --infobox \
+"\n\nApplying profile:\n\n\Zb$(pretty_name "$file")\Zn\n\nPlease wait..." \
+    10 $WIDTH > /dev/tty1
+
+  StopService                       # stop + pkill + release pins
   sudo rm -f "$TARGET_SCRIPT"
   sudo cp "$SCRIPT_DIR/$file" "$TARGET_SCRIPT"
   sudo chmod +x "$TARGET_SCRIPT"
-  sudo systemctl start "$SERVICE"
-  sleep 1
+  InstallCore
 
-  if systemctl is-active --quiet "$SERVICE"; then
-    dialog --colors --title " Result " --msgbox \
-      "\n\ZbApplied successfully:\Zn\n\n$(pretty_name "$file")" 9 $WIDTH > /dev/tty1
+  if service_exists; then
+    sudo systemctl start "$SERVICE"
+    sleep 2
+    if systemctl is-active --quiet "$SERVICE"; then
+      dialog --colors --title " Result " --msgbox \
+"\n\Zb✓ Applied successfully\Zn\n\n$(pretty_name "$file")" \
+        9 $WIDTH > /dev/tty1
+    else
+      dialog --colors --title " Warning " --msgbox \
+"\n\Zb$SERVICE failed to start.\Zn\n\nScript copied but may fail on boot." \
+        9 $WIDTH > /dev/tty1
+    fi
   else
-    dialog --colors --title " Warning " --msgbox \
-      "\n\Zb$SERVICE failed to start.\Zn\n\nScript copied but may fail on boot." 9 $WIDTH > /dev/tty1
+    dialog --colors --title " Done " --msgbox \
+"\n\ZbScript copied.\Zn\n\n\ZbService $SERVICE not present.\Zn\nStarting script manually." \
+      11 $WIDTH > /dev/tty1
+    sudo nohup python3 "$TARGET_SCRIPT" >/dev/null 2>&1 &
+    sleep 1
   fi
   sudo sync
 }
 
 RemoveLED() {
   if dialog --colors --title " Confirm " --yesno \
-    "\nRemove custom LED?\n\nPMIC will control the LED again." 8 $WIDTH > /dev/tty1; then
+    "\nRemove custom LED?\n\nDevice default will take over." 8 $WIDTH > /dev/tty1; then
 
-    sudo systemctl stop "$SERVICE" 2>/dev/null
-    sleep 1
-    sudo rm -f "$TARGET_SCRIPT"
+    StopService                     # stop + pkill + release pins
+
+    local nop
+    nop=$(ls -1 "$SCRIPT_DIR"/*_PMIC_Controlled.py 2>/dev/null | head -n 1)
+    if service_exists && [ -n "$nop" ]; then
+      # keep the service slot occupied with the "release everything" profile
+      sudo cp "$nop" "$TARGET_SCRIPT"
+      sudo chmod +x "$TARGET_SCRIPT"
+      InstallCore
+      sudo systemctl start "$SERVICE" 2>/dev/null
+    else
+      sudo rm -f "$TARGET_SCRIPT"
+    fi
     sudo sync
     dialog --colors --title " Done " --msgbox \
-      "\nCustom LED removed.\nPMIC now controls the LED." 7 $WIDTH > /dev/tty1
+      "\nCustom LED removed.\nDevice now controls the LED." 7 $WIDTH > /dev/tty1
   fi
 }
 
@@ -154,7 +401,7 @@ ManageCustom() {
     local options=() i=1
     options+=("D" "Delete ALL custom profiles...")
     for f in "${files[@]}"; do
-      options+=("$i" "$(pretty_name "$f")")
+      options+=("$i" "$(profile_line "$f" "$(short_name "${f%.py}")")")
       i=$((i+1))
     done
 
@@ -191,141 +438,131 @@ ManageCustom() {
   done
 }
 
-WizardGPIO() {
-  local v="$1"
-  if [ ! -d "/sys/class/gpio/gpio$GPIO_PIN" ]; then
-    echo "$GPIO_PIN" | sudo tee /sys/class/gpio/export >/dev/null 2>&1
-    sleep 0.3
-  fi
-  if [ "$v" = "in" ]; then
-    echo in | sudo tee "/sys/class/gpio/gpio$GPIO_PIN/direction" >/dev/null 2>&1
+GPIOExport() {
+  local pin="$1" i
+  [ -d "$GPIO_ROOT/gpio$pin" ] && return 0
+  echo "$pin" | sudo tee "$GPIO_ROOT/export" >/dev/null 2>&1
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    [ -d "$GPIO_ROOT/gpio$pin" ] && return 0
+    sleep 0.1
+  done
+  return 1                          # busy / reserved by the DTB / does not exist
+}
+
+GPIOSet() {
+  local pin="$1" mode="$2" value="$3" lvl
+  GPIOExport "$pin" || return 1
+  if [ "$mode" = "in" ]; then
+    echo in | sudo tee "$GPIO_ROOT/gpio$pin/direction" >/dev/null 2>&1
   else
-    echo out | sudo tee "/sys/class/gpio/gpio$GPIO_PIN/direction" >/dev/null 2>&1
-    echo "$v" | sudo tee "/sys/class/gpio/gpio$GPIO_PIN/value" >/dev/null 2>&1
+    lvl=low
+    [ "$value" = "1" ] && lvl=high
+    # "high"/"low" set direction AND level at once (no glitch to 0)
+    if ! echo "$lvl" | sudo tee "$GPIO_ROOT/gpio$pin/direction" >/dev/null 2>&1; then
+      echo out | sudo tee "$GPIO_ROOT/gpio$pin/direction" >/dev/null 2>&1
+      echo "$value" | sudo tee "$GPIO_ROOT/gpio$pin/value" >/dev/null 2>&1
+    fi
   fi
 }
 
-WizardAbort() {
-  WizardGPIO in
-  sudo systemctl start "$SERVICE" 2>/dev/null
+# Give every pin we may have driven back to the PMIC (only pins already exported).
+ReleasePins() {
+  local pin
+  for pin in "${PROBE_PINS[@]}"; do
+    if [ -d "$GPIO_ROOT/gpio$pin" ]; then
+      echo in | sudo tee "$GPIO_ROOT/gpio$pin/direction" >/dev/null 2>&1
+    fi
+  done
+}
+
+InstallCore() {
+  [ -f "$CORE_SRC" ] || return 1
+  sudo cp "$CORE_SRC" "$CORE_DST" && sudo chmod 644 "$CORE_DST"
+}
+
+HasColor() {
+  local want="$1" x
+  shift
+  for x in "$@"; do
+    [ "$x" = "$want" ] && return 0
+  done
+  return 1
+}
+
+StopService() {
+  if service_exists; then
+    sudo systemctl stop "$SERVICE" 2>/dev/null
+  fi
+  sudo pkill -f batt_life_warning.py 2>/dev/null
+  sleep 1
+  ReleasePins                       # a killed script leaves its pins driven
+}
+
+StartService() {
+  if service_exists; then
+    sudo systemctl start "$SERVICE" 2>/dev/null
+  fi
 }
 
 AskColor() {
-  local title="$1" text="$2"
-  dialog --colors --title " $title " --menu "$text" 13 $WIDTH 4 \
-    "green" "Green" \
-    "blue"  "Blue" \
-    "red"   "Red" \
-    "off"   "Off" \
+  local title="$1" text="${2:-What color do you see on the LED?}"
+  dialog --colors --title " $title " --cancel-label "Abort" --menu \
+"\n$text" \
+    18 $WIDTH 7 \
+    "blue"   "$(draw_bar blue 12) Blue" \
+    "red"    "$(draw_bar red 12) Red" \
+    "purple" "$(draw_bar purple 12) Purple / Pink" \
+    "green"  "$(draw_bar green 12) Green" \
+    "orange" "$(draw_bar orange 12) Orange / Yellow" \
+    "white"  "$(draw_bar white 12) White" \
+    "off"    "$(draw_bar off 12) Off" \
     2>&1 >/dev/tty1
 }
 
-GenerateProfile() {
-  local THRESHOLD="$1" OK_COLOR="$2" LOW_COLOR="$3"
-  local GREEN_VAL="$4" BLUE_VAL="$5" RED_VAL="$6" OFF_MODE="$7" OFF_VAL="$8"
-  local MODEL_RAW MODEL
+WizardAbort() {
+  ReleasePins
+  [ -n "$OBS_FILE" ] && rm -f "$OBS_FILE" 2>/dev/null
+  OBS_FILE=""
+  StartService
+}
 
-  MODEL_RAW=$(detect_model | tr -d '\n\r' | cut -c1-64)
-  MODEL=$(echo "$MODEL_RAW" | tr -c 'A-Za-z0-9' '_' | sed 's/__*/_/g; s/^_//; s/_$//')
-  [ -z "$MODEL" ] && MODEL="Unknown"
+GenerateUniversalProfile() {
+  local HIGH_THR="$1" LOW_THR="$2"
+  local Z_HIGH="$3" Z_MID="$4" Z_LOW="$5"
+  local BLINK_PERIOD="${6:-1.0}"
 
-  local FNAME="Custom_${THRESHOLD}_${OK_COLOR}_to_${LOW_COLOR}.py"
+  local FNAME="Custom_${HIGH_THR}_${LOW_THR}_${Z_HIGH}_${Z_MID}_${Z_LOW}.py"
   local FOUT="$SCRIPT_DIR/$FNAME"
+
+  # colors actually used by the zones (blink zones "a+b" use both)
+  local need
+  need=$(printf '%s\n' "${Z_HIGH//+/$'\n'}" "${Z_MID//+/$'\n'}" "${Z_LOW//+/$'\n'}" | sort -u | paste -sd, -)
+
+  local CMAP
+  CMAP=$(python3 "$CORE_SRC" --solve "$OBS_FILE" --pins "$WIZ_PINS" --need "$need") || return 1
+  [ -n "$CMAP" ] || return 1
 
   [ -f "$FOUT" ] && sudo mv "$FOUT" "${FOUT}.bak"
 
+  local PINS_PY="[${WIZ_PINS//,/, }]"
+  local MID_MIN=$((LOW_THR + 1))
+
   sudo tee "$FOUT" > /dev/null <<EOF
 #!/usr/bin/env python3
-# Auto-generated by R36S LED Control diagnostic wizard
-# Model: $MODEL_RAW
-# Generated: $(date '+%Y-%m-%d %H:%M:%S')
-import os, time
+# Custom LED profile generated by R36S LED Control (needs batt_led_core.py next to it).
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import batt_led_core as core
 
-CAP = "/sys/class/power_supply/battery/capacity"
-STATUS = "/sys/class/power_supply/battery/status"
-GPIO = $GPIO_PIN
-GPIO_DIR = f"/sys/class/gpio/gpio{GPIO}"
-DIR = f"{GPIO_DIR}/direction"
-VAL = f"{GPIO_DIR}/value"
-
-GREEN_VAL = $GREEN_VAL
-BLUE_VAL  = $BLUE_VAL
-RED_VAL   = $RED_VAL
-
-OFF_MODE = "$OFF_MODE"
-OFF_VAL  = $OFF_VAL
-
-THRESHOLD = $THRESHOLD
-OK_COLOR  = "$OK_COLOR"
-LOW_COLOR = "$LOW_COLOR"
-
-def write(path, v):
-    try:
-        with open(path, "w") as f:
-            f.write(str(v))
-    except:
-        pass
-
-def ensure_exported():
-    if not os.path.exists(GPIO_DIR):
-        write("/sys/class/gpio/export", GPIO)
-        time.sleep(0.15)
-
-def gpio_off():
-    if OFF_MODE == "input":
-        write(DIR, "in")
-    elif OFF_MODE == "unexport":
-        if os.path.exists(GPIO_DIR):
-            write("/sys/class/gpio/unexport", GPIO)
-    elif OFF_MODE == "value":
-        ensure_exported()
-        write(DIR, "out")
-        write(VAL, OFF_VAL)
-
-def gpio_set(value):
-    if value is None:
-        gpio_off()
-        return
-    ensure_exported()
-    write(DIR, "out")
-    write(VAL, value)
-
-COLOR_VALS = {
-    "green": GREEN_VAL,
-    "blue":  BLUE_VAL,
-    "red":   RED_VAL,
-    "off":   None,
-}
-
-def apply_color(c):
-    gpio_set(COLOR_VALS.get(c))
-
-gpio_off()
-prev = (-1, "")
-
-while True:
-    try:
-        cap = int(open(CAP).read().strip())
-        status = open(STATUS).read().strip()
-    except:
-        gpio_off()
-        time.sleep(10)
-        continue
-
-    if (cap, status) == prev:
-        time.sleep(5)
-        continue
-
-    prev = (cap, status)
-
-    if status in ["Charging", "Full"]:
-        gpio_off()
-    elif cap <= THRESHOLD:
-        apply_color(LOW_COLOR)
-    else:
-        apply_color(OK_COLOR)
-
-    time.sleep(5)
+core.run(
+    pins=$PINS_PY,
+    colors={
+$CMAP
+    },
+    zones=[($HIGH_THR, "$Z_HIGH"), ($MID_MIN, "$Z_MID"), (0, "$Z_LOW")],
+    hysteresis=2,
+    blink_period=$BLINK_PERIOD,
+)
 EOF
 
   sudo chmod +x "$FOUT"
@@ -333,209 +570,337 @@ EOF
   echo "$FNAME"
 }
 
-WizardLED() {
-  if [ ! -d "/sys/class/gpio/gpio$GPIO_PIN" ] && [ ! -w /sys/class/gpio/export ]; then
-    dialog --colors --title " Unavailable " --msgbox \
-      "\nGPIO $GPIO_PIN is not available on this device." 8 $WIDTH > /dev/tty1
+PickColor() {
+  local title="$1" current="$2"
+  shift 2
+  local available=("$@")
+
+  local options=() i=1 c
+  for c in "${available[@]}"; do
+    local mark=" "
+    [ "$c" = "$current" ] && mark="*"
+    options+=("$i" "${mark} $(draw_bar "$c" 18)")
+    i=$((i+1))
+  done
+
+  local pick
+  pick=$(dialog --colors --title " $title " --menu \
+    "\nSelect a color:" 17 $WIDTH 8 "${options[@]}" \
+    2>&1 >/dev/tty1) || return 1
+  [ -z "$pick" ] && return 1
+  echo "${available[$((pick - 1))]}"
+}
+
+PickZone() {
+  local title="$1" current="$2"
+  shift 2
+  local available=("$@")
+
+  local cur_c1="$current" cur_c2=""
+  if [[ "$current" == *+* ]]; then
+    cur_c1="${current%%+*}"
+    cur_c2="${current##*+}"
+  fi
+
+  local options=() i=1 c
+  for c in "${available[@]}"; do
+    local mark=" "
+    [ "$c" = "$cur_c1" ] && [ -z "$cur_c2" ] && mark="*"
+    options+=("$i" "${mark} $(draw_bar "$c" 12)  $(color_display "$c")")
+    i=$((i+1))
+  done
+  local bmark=" "
+  [ -n "$cur_c2" ] && bmark="*"
+  options+=("B" "${bmark} Blink between two colors...")
+
+  local pick
+  pick=$(dialog --colors --title " $title " --menu \
+    "\nChoose a mode for this zone:" 18 $WIDTH 9 "${options[@]}" \
+    2>&1 >/dev/tty1) || return 1
+  [ -z "$pick" ] && return 1
+
+  if [ "$pick" = "B" ]; then
+    local c1 c2
+    c1=$(PickColor "Blink - color 1" "$cur_c1" "${available[@]}") || return 1
+    [ -z "$c1" ] && return 1
+    c2=$(PickColor "Blink - color 2" "$cur_c2" "${available[@]}") || return 1
+    [ -z "$c2" ] && return 1
+    echo "${c1}+${c2}"
+  else
+    echo "${available[$((pick - 1))]}"
+  fi
+}
+
+zone_preview_line() {
+  local z="$1"
+  if [[ "$z" == *+* ]]; then
+    local c1="${z%%+*}"
+    local c2="${z##*+}"
+    printf '%s  %s ↻ %s' "$(draw_bar "$c1" 8 "$c2")" "$(color_display "$c1")" "$(color_display "$c2")"
+  else
+    printf '%s  %s' "$(draw_bar "$z" 8)" "$(color_display "$z")"
+  fi
+}
+
+WizardColorPicker() {
+  local available_colors=("$@")
+
+  if [ ${#available_colors[@]} -eq 0 ]; then
+    dialog --colors --title " Error " --msgbox "\nNo colors available." 7 $WIDTH >/dev/tty1
+    WizardAbort
     return
   fi
 
-  dialog --colors --title " Diagnostic " --yesno \
-    "\nThe wizard will test GPIO $GPIO_PIN\nand ask what you see on the LED.\n\nStart?" 11 $WIDTH > /dev/tty1 || return
+  local colors=()
+  local c
+  for c in "${available_colors[@]}"; do
+    [ "$c" != "off" ] && colors+=("$c")
+  done
+  local has_off="no"
+  for c in "${available_colors[@]}"; do
+    [ "$c" = "off" ] && has_off="yes"
+  done
+  [ "$has_off" = "yes" ] && colors+=("off")
 
-  sudo systemctl stop "$SERVICE" 2>/dev/null
-  sleep 1
+  if [ ${#colors[@]} -eq 0 ]; then
+    colors=("off")
+  fi
 
-  WizardGPIO 0
-  dialog --colors --infobox "\n\nGPIO is at value=0.\n\nObserve the LED..." 8 $WIDTH > /dev/tty1
-  sleep 5
-  local A
-  A=$(AskColor " Test 1/4 " "\nWith value=0, what color?")
-  [ -z "$A" ] && { WizardAbort; return; }
+  local HIGH_THR=30 LOW_THR=10
+  local Z_HIGH="${colors[0]}" Z_MID="${colors[0]}" Z_LOW="${colors[0]}"
+  local pref
 
-  WizardGPIO 1
-  dialog --colors --infobox "\n\nGPIO is at value=1.\n\nObserve the LED..." 8 $WIDTH > /dev/tty1
-  sleep 5
-  local B
-  B=$(AskColor " Test 2/4 " "\nWith value=1, what color?")
-  [ -z "$B" ] && { WizardAbort; return; }
-
-  WizardGPIO in
-  dialog --colors --infobox "\n\nGPIO is in input (high-Z).\n\nObserve the LED..." 8 $WIDTH > /dev/tty1
-  sleep 5
-  local C
-  C=$(AskColor " Test 3/4 " "\nWith input (high-Z), what color?")
-  [ -z "$C" ] && { WizardAbort; return; }
-
-  local D="off"
-  if [ "$C" != "off" ]; then
-    if [ -d "/sys/class/gpio/gpio$GPIO_PIN" ]; then
-      echo "$GPIO_PIN" | sudo tee /sys/class/gpio/unexport >/dev/null 2>&1
+  for pref in blue green off; do
+    if HasColor "$pref" "${colors[@]}"; then Z_HIGH="$pref"; break; fi
+  done
+  for pref in red orange; do
+    if HasColor "$pref" "${colors[@]}"; then Z_LOW="$pref"; break; fi
+  done
+  Z_MID="$Z_HIGH"
+  for pref in purple orange white green blue red; do
+    if [ "$pref" != "$Z_HIGH" ] && [ "$pref" != "$Z_LOW" ] && HasColor "$pref" "${colors[@]}"; then
+      Z_MID="$pref"; break
     fi
-    dialog --colors --infobox "\n\nGPIO is unexported (released).\n\nObserve the LED..." 8 $WIDTH > /dev/tty1
-    sleep 5
-    D=$(AskColor " Test 4/4 " "\nWith GPIO released, what color?")
-    [ -z "$D" ] && { WizardAbort; return; }
-    echo "$GPIO_PIN" | sudo tee /sys/class/gpio/export >/dev/null 2>&1
-    sleep 0.3
-  fi
+  done
 
-  local GREEN_VAL="" BLUE_VAL="" RED_VAL=""
-  case "$A" in
-    green) GREEN_VAL=0 ;;
-    blue)  BLUE_VAL=0 ;;
-    red)   RED_VAL=0 ;;
-  esac
-  case "$B" in
-    green) GREEN_VAL=1 ;;
-    blue)  BLUE_VAL=1 ;;
-    red)   RED_VAL=1 ;;
-  esac
+  local BLINK_PERIOD="1.0"
 
-  local OFF_MODE="none" OFF_VAL=0
-  if   [ "$C" = "off" ]; then OFF_MODE="input"
-  elif [ "$D" = "off" ]; then OFF_MODE="unexport"
-  elif [ "$A" = "off" ]; then OFF_MODE="value"; OFF_VAL=0
-  elif [ "$B" = "off" ]; then OFF_MODE="value"; OFF_VAL=1
-  fi
+  while true; do
+    local any_blink=0
+    [[ "$Z_HIGH" == *+* ]] && any_blink=1
+    [[ "$Z_MID"  == *+* ]] && any_blink=1
+    [[ "$Z_LOW"  == *+* ]] && any_blink=1
 
-  local HAS_GREEN=0 HAS_BLUE=0 HAS_RED=0 HAS_OFF=0
-  [ -n "$GREEN_VAL" ] && HAS_GREEN=1
-  [ -n "$BLUE_VAL" ]  && HAS_BLUE=1
-  [ -n "$RED_VAL" ]   && HAS_RED=1
-  [ "$OFF_MODE" != "none" ] && HAS_OFF=1
+    local menu_items=(
+      "1" "High (>=${HIGH_THR}%):   $(zone_preview_line "$Z_HIGH")"
+      "2" "Mid ($((LOW_THR + 1))-$((HIGH_THR - 1))%):   $(zone_preview_line "$Z_MID")"
+      "3" "Low (≤${LOW_THR}%):    $(zone_preview_line "$Z_LOW")"
+      "4" "High threshold:   ${HIGH_THR}%"
+      "5" "Low threshold:    ${LOW_THR}%"
+    )
+    [ "$any_blink" = "1" ] && menu_items+=("6" "Blink period:     ${BLINK_PERIOD}s")
+    menu_items+=("7" "\Zb✔  Save & Apply\Zn")
 
-  local opts=() n=0
-  local NORMAL_OPTS=()
+    local pick
+    pick=$(dialog --colors --title " LED Behavior " --no-collapse --clear \
+      --ok-label "Select" --cancel-label "Cancel" \
+      --menu "" 20 $WIDTH 8 "${menu_items[@]}" \
+      2>&1 >/dev/tty1) || { WizardAbort; return; }
 
-  [ "$HAS_OFF"   = "1" ] && NORMAL_OPTS+=("off")
-  [ "$HAS_GREEN" = "1" ] && NORMAL_OPTS+=("green")
-  [ "$HAS_BLUE"  = "1" ] && NORMAL_OPTS+=("blue")
-  [ "$HAS_RED"   = "1" ] && NORMAL_OPTS+=("red")
-
-  if [ "$HAS_RED" = "1" ]; then
-    local thr ok label_ok
-    for thr in 10 20 30; do
-      for ok in "${NORMAL_OPTS[@]}"; do
-        [ "$ok" = "red" ] && continue
-        case "$ok" in
-          off)   label_ok="Off" ;;
-          green) label_ok="Green" ;;
-          blue)  label_ok="Blue" ;;
-          red)   label_ok="Red" ;;
-        esac
-        n=$((n+1))
-        opts+=("$n" "$label_ok >= $((thr+1))%   |   Red <= $thr%")
-      done
-    done
-  else
-    local ok label_ok
-    for ok in "${NORMAL_OPTS[@]}"; do
-      [ "$ok" = "red" ] && continue
-      case "$ok" in
-        off)   label_ok="Always off" ;;
-        green) label_ok="Always green" ;;
-        blue)  label_ok="Always blue" ;;
-        red)   label_ok="Always red" ;;
-      esac
-      n=$((n+1))
-      opts+=("$n" "$label_ok")
-    done
-  fi
-
-  opts+=("C" "Custom...")
-  local MENU_H=$((${#opts[@]} / 2))
-  [ "$MENU_H" -lt 4 ] && MENU_H=4
-
-  if [ "$HAS_OFF" = "0" ]; then
-    dialog --colors --title " Note " --msgbox \
-      "\nThis LED cannot be turned off.\n\nOnly color changes will be available." 8 $WIDTH > /dev/tty1
-  fi
-
-  local PICK
-  PICK=$(dialog --colors --title " LED Behavior " --menu \
-    "\nChoose how the LED should behave:" 16 $WIDTH $MENU_H "${opts[@]}" \
-    2>&1 >/dev/tty1)
-  [ -z "$PICK" ] && { WizardAbort; return; }
-
-  local THRESHOLD="" OK_COLOR="" LOW_COLOR=""
-
-  if [ "$PICK" = "C" ]; then
-    THRESHOLD=$(dialog --colors --title " Threshold " --menu \
-      "\nLow battery threshold:" 12 $WIDTH 3 \
-      "10" "10%" "20" "20%" "30" "30%" 2>&1 >/dev/tty1)
-    [ -z "$THRESHOLD" ] && { WizardAbort; return; }
-
-    local ok_menu=()
-    [ "$HAS_OFF"   = "1" ] && ok_menu+=("off"   "Off")
-    [ "$HAS_GREEN" = "1" ] && ok_menu+=("green" "Green")
-    [ "$HAS_BLUE"  = "1" ] && ok_menu+=("blue"  "Blue")
-    [ "$HAS_RED"   = "1" ] && ok_menu+=("red"   "Red")
-
-    OK_COLOR=$(dialog --colors --title " Normal " --menu \
-      "\nAbove $THRESHOLD%, the LED is:" 14 $WIDTH 5 "${ok_menu[@]}" 2>&1 >/dev/tty1)
-    [ -z "$OK_COLOR" ] && { WizardAbort; return; }
-
-    local low_menu=()
-    [ "$HAS_RED"   = "1" ] && low_menu+=("red"   "Red")
-    [ "$HAS_GREEN" = "1" ] && low_menu+=("green" "Green")
-    [ "$HAS_BLUE"  = "1" ] && low_menu+=("blue"  "Blue")
-    [ "$HAS_OFF"   = "1" ] && low_menu+=("off"   "Off")
-
-    LOW_COLOR=$(dialog --colors --title " Low battery " --menu \
-      "\nAt or below $THRESHOLD%, the LED is:" 14 $WIDTH 5 "${low_menu[@]}" 2>&1 >/dev/tty1)
-    [ -z "$LOW_COLOR" ] && { WizardAbort; return; }
-  else
-    if [ "$HAS_RED" = "1" ]; then
-      local idx=0 matched=0 thr ok
-      for thr in 10 20 30; do
-        for ok in "${NORMAL_OPTS[@]}"; do
-          [ "$ok" = "red" ] && continue
-          idx=$((idx+1))
-          if [ "$idx" = "$PICK" ]; then
-            THRESHOLD=$thr
-            OK_COLOR=$ok
-            LOW_COLOR="red"
-            matched=1
-            break 2
+    case "$pick" in
+      1)
+        c=$(PickZone "High zone (>= ${HIGH_THR}%)" "$Z_HIGH" "${colors[@]}") \
+          && [ -n "$c" ] && Z_HIGH="$c"
+        ;;
+      2)
+        c=$(PickZone "Mid zone ($((LOW_THR + 1))-$((HIGH_THR - 1))%)" "$Z_MID" "${colors[@]}") \
+          && [ -n "$c" ] && Z_MID="$c"
+        ;;
+      3)
+        c=$(PickZone "Low zone (≤ ${LOW_THR}%)" "$Z_LOW" "${colors[@]}") \
+          && [ -n "$c" ] && Z_LOW="$c"
+        ;;
+      4)
+        local t
+        t=$(dialog --colors --title " High threshold " --menu \
+          "\nBattery level at or above which the high color is shown:" 14 $WIDTH 5 \
+          "30" "30%" "50" "50%" "70" "70%" "20" "20%" "10" "10%" 2>&1 >/dev/tty1)
+        if [ -n "$t" ]; then
+          HIGH_THR="$t"
+          if [ "$LOW_THR" -ge "$HIGH_THR" ]; then
+            LOW_THR=$((HIGH_THR - 10))
+            [ "$LOW_THR" -lt 1 ] && LOW_THR=5
           fi
-        done
-      done
-      if [ "$matched" = "0" ]; then
-        WizardAbort
-        return
-      fi
-    else
-      local idx=0 ok
-      for ok in "${NORMAL_OPTS[@]}"; do
-        [ "$ok" = "red" ] && continue
-        idx=$((idx+1))
-        if [ "$idx" = "$PICK" ]; then
-          THRESHOLD=0
-          OK_COLOR=$ok
-          LOW_COLOR=$ok
-          break
         fi
-      done
-    fi
+        ;;
+      5)
+        local t
+        t=$(dialog --colors --title " Low threshold " --menu \
+          "\nBattery level at or below which the low color is shown:" 14 $WIDTH 5 \
+          "10" "10%" "20" "20%" "30" "30%" "5"  "5%" "1" "1%" 2>&1 >/dev/tty1)
+        if [ -n "$t" ]; then
+          if [ "$t" -ge "$HIGH_THR" ]; then
+            dialog --colors --title " Invalid " --msgbox \
+              "\nLow threshold must be below the high threshold." 7 $WIDTH >/dev/tty1
+          else
+            LOW_THR="$t"
+          fi
+        fi
+        ;;
+      6)
+        local np
+        np=$(dialog --colors --title " Blink period " --menu \
+          "\nTime between color changes:" 15 $WIDTH 5 \
+          "0.25" "0.25s (fast)" \
+          "0.5"  "0.5s" \
+          "1.0"  "1.0s (default)" \
+          "2.0"  "2.0s (slow)" \
+          2>&1 >/dev/tty1)
+        [ -n "$np" ] && BLINK_PERIOD="$np"
+        ;;
+      7|"")
+        local FNAME
+        FNAME=$(GenerateUniversalProfile "$HIGH_THR" "$LOW_THR" "$Z_HIGH" "$Z_MID" "$Z_LOW" "$BLINK_PERIOD")
+        if [ -n "$FNAME" ] && [ -f "$SCRIPT_DIR/$FNAME" ]; then
+          if dialog --colors --title " Profile " --yesno \
+            "\nGenerated:\n$FNAME\n\nApply now?" 11 $WIDTH >/dev/tty1; then
+            ApplyLED "$FNAME"
+            return
+          fi
+        else
+          dialog --colors --title " Error " --msgbox \
+            "\nFailed to generate profile." 6 $WIDTH >/dev/tty1
+        fi
+        ;;
+    esac
+  done
+}
+
+WizardLED() {
+  dialog --colors --title " Diagnostic " --yesno \
+    "\nThe wizard will test each available pin\nand ask what color you see on the LED.\n\n\ZbUnplug the charger first.\Zn\nYou can cancel at any time.\n\nStart?" 14 $WIDTH > /dev/tty1 || return
+
+  local bstatus
+  bstatus=$(cat "$BATT_DIR/status" 2>/dev/null)
+  case "$bstatus" in
+    Charging|Full|"Not charging")
+      dialog --colors --title " Charger detected " --yesno \
+        "\nThe charger seems connected.\nThe PMIC will light the LED and\nspoil the test.\n\nContinue anyway?" 11 $WIDTH > /dev/tty1 || return
+      ;;
+  esac
+
+  if [ ! -f "$CORE_SRC" ]; then
+    dialog --colors --title " Error " --msgbox "\n$CORE_NAME not found in\n$SCRIPT_DIR" 8 $WIDTH > /dev/tty1
+    return
   fi
 
-  local FNAME
-  FNAME=$(GenerateProfile "$THRESHOLD" "$OK_COLOR" "$LOW_COLOR" \
-    "$GREEN_VAL" "$BLUE_VAL" "$RED_VAL" "$OFF_MODE" "$OFF_VAL")
+  StopService
+  OBS_FILE=$(mktemp /tmp/r36s_led_obs.XXXXXX)
+  WIZ_PINS=""
 
-  if [ -z "$FNAME" ] || [ ! -f "$SCRIPT_DIR/$FNAME" ]; then
-    dialog --colors --title " Error " --msgbox "\nFailed to generate profile." 6 $WIDTH > /dev/tty1
+  local -A res=()
+  local pin st col base cancelled=0
+  local -a probed=()
+
+  # 0) baseline: every pin released
+  dialog --colors --infobox "\n\nAll pins released.\n\nWatch the LED..." 9 $WIDTH > /dev/tty1
+  sleep 2
+  base=$(AskColor "Baseline" "All pins released.\nWhat color is the LED now?")
+  if [ $? -ne 0 ] || [ -z "$base" ]; then
+    WizardAbort
+    return
+  fi
+  echo "- $base" >> "$OBS_FILE"
+
+  # 1) each pin alone (all others released): drive 0, then drive 1
+  for pin in "${PROBE_PINS[@]}"; do
+    GPIOExport "$pin" || continue          # busy / reserved by the DTB: skip
+    for st in 0 1; do
+      dialog --colors --infobox \
+"\n\nTesting pin $pin\n\nDrive = $st\n\nWatch the LED..." 10 $WIDTH > /dev/tty1
+      GPIOSet "$pin" out "$st"
+      sleep 2
+      col=$(AskColor "Pin $pin = $st")
+      if [ $? -ne 0 ] || [ -z "$col" ]; then
+        cancelled=1
+        break
+      fi
+      res["$pin:$st"]="$col"
+      echo "$pin=$st $col" >> "$OBS_FILE"
+    done
+    GPIOSet "$pin" in
+    [ "$cancelled" = "1" ] && break
+    probed+=("$pin")
+  done
+  if [ "$cancelled" = "1" ]; then
     WizardAbort
     return
   fi
 
-  if dialog --colors --title " Profile " --yesno \
-    "\nGenerated:\n$FNAME\n\nApply now?" 10 $WIDTH > /dev/tty1; then
-    ApplyLED "$FNAME"
-  else
+  # 2) active pins = those that changed the LED vs baseline (keep the best two)
+  local lines="" n
+  for pin in "${probed[@]}"; do
+    n=0
+    [ "${res[$pin:0]}" != "$base" ] && n=$((n + 1))
+    [ "${res[$pin:1]}" != "$base" ] && n=$((n + 1))
+    [ "$n" -gt 0 ] && lines+="$n $pin"$'\n'
+  done
+  local -a active=()
+  mapfile -t active < <(printf '%s' "$lines" | sort -s -k1,1nr | head -n 2 | awk '{print $2}')
+
+  if [ ${#active[@]} -eq 0 ]; then
+    dialog --colors --title " Unavailable " --msgbox \
+      "\nNo controllable LED behavior detected.\n\nAborting." 8 $WIDTH > /dev/tty1
     WizardAbort
+    return
   fi
+
+  # 3) two active pins: test every combination where both are driven
+  if [ ${#active[@]} -eq 2 ]; then
+    local a="${active[0]}" b="${active[1]}" sa sb
+    for sa in 0 1; do
+      for sb in 0 1; do
+        dialog --colors --infobox \
+"\n\nTesting pins $a + $b\n\n$a = $sa    $b = $sb\n\nWatch the LED..." 10 $WIDTH > /dev/tty1
+        GPIOSet "$a" out "$sa"
+        GPIOSet "$b" out "$sb"
+        sleep 2
+        col=$(AskColor "Pins $a=$sa  $b=$sb")
+        if [ $? -ne 0 ] || [ -z "$col" ]; then
+          cancelled=1
+          break 2
+        fi
+        echo "$a=$sa,$b=$sb $col" >> "$OBS_FILE"
+      done
+    done
+    GPIOSet "$a" in
+    GPIOSet "$b" in
+    if [ "$cancelled" = "1" ]; then
+      WizardAbort
+      return
+    fi
+  fi
+
+  WIZ_PINS=$(IFS=,; echo "${active[*]}")
+
+  # 4) which colors can the hardware actually produce?
+  local -a found_colors=()
+  mapfile -t found_colors < <(python3 "$CORE_SRC" --solve "$OBS_FILE" --pins "$WIZ_PINS" 2>/dev/null)
+
+  local usable=0 c
+  for c in "${found_colors[@]}"; do
+    [ "$c" != "off" ] && usable=1
+  done
+  if [ "$usable" = "0" ]; then
+    dialog --colors --title " Unavailable " --msgbox \
+      "\nNo controllable LED behavior detected.\n\nAborting." 8 $WIDTH > /dev/tty1
+    WizardAbort
+    return
+  fi
+
+  WizardColorPicker "${found_colors[@]}"
+  [ -n "$OBS_FILE" ] && rm -f "$OBS_FILE" 2>/dev/null
+  OBS_FILE=""
 }
 
 VariantMenu() {
@@ -548,7 +913,7 @@ VariantMenu() {
     fi
     local options=() i=1
     for f in "${files[@]}"; do
-      options+=("$i" "$(pretty_name "$f")")
+      options+=("$i" "$(profile_line "$f" "$(short_name "${f%.py}")")")
       i=$((i+1))
     done
     choice=$(dialog --colors \
@@ -558,7 +923,11 @@ VariantMenu() {
       --ok-label "Apply" --cancel-label "Back" \
       --menu "" $HEIGHT $WIDTH 12 "${options[@]}" 2>&1 >/dev/tty1)
     [[ $? -ne 0 ]] && return
-    ApplyLED "${files[$((choice - 1))]}"
+
+    local target="${files[$((choice - 1))]}"
+    if ConfirmApply "$target"; then
+      ApplyLED "$target"
+    fi
   done
 }
 
@@ -573,7 +942,7 @@ CustomMenu() {
 
     local options=() i=1
     for f in "${files[@]}"; do
-      options+=("$i" "$(pretty_name "$f")")
+      options+=("$i" "$(profile_line "$f" "$(short_name "${f%.py}")")")
       i=$((i+1))
     done
     options+=("M" "Manage / Delete...")
@@ -590,30 +959,38 @@ CustomMenu() {
     if [ "$choice" = "M" ]; then
       ManageCustom
     else
-      ApplyLED "${files[$((choice - 1))]}"
+      local target="${files[$((choice - 1))]}"
+      if ConfirmApply "$target"; then
+        ApplyLED "$target"
+      fi
     fi
   done
 }
 
 MainMenu() {
   while true; do
-    local cur model
-    cur=$(current_led)
+    local model cur_file cur_swatches
     model=$(detect_model)
+    cur_file=$(current_file)
+    if [ -n "$cur_file" ]; then
+      cur_swatches=$(profile_swatches "$cur_file")
+    else
+      cur_swatches="\Zn[ Device default ]\Zn"
+    fi
 
     choice=$(dialog --colors \
       --backtitle " R36S LED Control " \
       --title " Main Menu " \
       --no-collapse --clear \
       --ok-label "Select" --cancel-label "Exit" \
-      --menu "Model:  $model\nActive: $cur\n\nSelect a device family:" \
+      --menu "Model:  $model\nActive: $cur_swatches\n\nSelect a device family:" \
       $HEIGHT $WIDTH 11 \
       "1" "Clone" \
       "2" "R36S" \
       "3" "SoySauce" \
       "4" "Custom (generated profiles)" \
       "5" "Diagnose & Create Profile" \
-      "6" "Remove LED (PMIC control)" \
+      "6" "Remove LED (device control)" \
       "7" "Exit" \
       2>&1 >/dev/tty1)
 
