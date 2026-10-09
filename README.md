@@ -84,6 +84,16 @@ Copy the tool folder or script to your handheld's `/roms/tools/` directory.
 
 ---
 
+## Screenshots
+
+| Main Menu | Clone Submenu |
+| :---: | :---: |
+| <a href="https://github.com/user-attachments/assets/ed0d6d0d-edb8-4731-b4c4-fcc82f6becdf"><img src="https://github.com/user-attachments/assets/ed0d6d0d-edb8-4731-b4c4-fcc82f6becdf" width="300" alt="Main Menu"></a> | <a href="https://github.com/user-attachments/assets/bf9b2975-7927-49f5-aa5b-9ce370a3f654"><img src="https://github.com/user-attachments/assets/bf9b2975-7927-49f5-aa5b-9ce370a3f654" width="300" alt="Clone Menu"></a> |
+| **Diagnostic Wizard** | **Custom Profile Configuration** |
+| <a href="https://github.com/user-attachments/assets/258591ec-b521-4843-bac4-c353e8a9e2ef"><img src="https://github.com/user-attachments/assets/258591ec-b521-4843-bac4-c353e8a9e2ef" width="300" alt="Diagnostic Wizard"></a> | <a href="https://github.com/user-attachments/assets/c13638dc-7e1a-4ec8-981d-d8019c44126c"><img src="https://github.com/user-attachments/assets/c13638dc-7e1a-4ec8-981d-d8019c44126c" width="300" alt="Custom Profile"></a> |
+
+---
+
 ## Credits & Acknowledgments
 
 Base LED scripts adapted from **southoz**:
