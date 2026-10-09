@@ -697,10 +697,18 @@ WizardColorPicker() {
     [[ "$Z_MID"  == *+* ]] && any_blink=1
     [[ "$Z_LOW"  == *+* ]] && any_blink=1
 
+    local line1_lbl="High (>=$HIGH_THR%):"
+    local line2_lbl="Mid ($((LOW_THR + 1))-$((HIGH_THR - 1))%):"
+    local line3_lbl="Low (<=$LOW_THR%):"
+
+    while [ ${#line1_lbl} -lt 21 ]; do line1_lbl="$line1_lbl "; done
+    while [ ${#line2_lbl} -lt 21 ]; do line2_lbl="$line2_lbl "; done
+    while [ ${#line3_lbl} -lt 21 ]; do line3_lbl="$line3_lbl "; done
+
     local menu_items=(
-      "1" "High (>=${HIGH_THR}%):   $(zone_preview_line "$Z_HIGH")"
-      "2" "Mid ($((LOW_THR + 1))-$((HIGH_THR - 1))%):   $(zone_preview_line "$Z_MID")"
-      "3" "Low (≤${LOW_THR}%):    $(zone_preview_line "$Z_LOW")"
+      "1" "${line1_lbl} $(zone_preview_line "$Z_HIGH")"
+      "2" "${line2_lbl} $(zone_preview_line "$Z_MID")"
+      "3" "${line3_lbl} $(zone_preview_line "$Z_LOW")"
       "4" "High threshold:   ${HIGH_THR}%"
       "5" "Low threshold:    ${LOW_THR}%"
     )
@@ -723,7 +731,7 @@ WizardColorPicker() {
           && [ -n "$c" ] && Z_MID="$c"
         ;;
       3)
-        c=$(PickZone "Low zone (≤ ${LOW_THR}%)" "$Z_LOW" "${colors[@]}") \
+        c=$(PickZone "Low zone (<= ${LOW_THR}%)" "$Z_LOW" "${colors[@]}") \
           && [ -n "$c" ] && Z_LOW="$c"
         ;;
       4)
@@ -796,7 +804,8 @@ WizardLED() {
   esac
 
   if [ ! -f "$CORE_SRC" ]; then
-    dialog --colors --title " Error " --msgbox "\n$CORE_NAME not found in\n$SCRIPT_DIR" 8 $WIDTH > /dev/tty1
+    dialog --colors --title " Error " --msgbox \
+      "\n$CORE_NAME not found in\n$SCRIPT_DIR" 8 $WIDTH > /dev/tty1
     return
   fi
 
@@ -818,7 +827,7 @@ WizardLED() {
   echo "- $base" >> "$OBS_FILE"
 
   for pin in "${PROBE_PINS[@]}"; do
-    GPIOExport "$pin" || continue          # busy / reserved by the DTB: skip
+    GPIOExport "$pin" || continue          
     for st in 0 1; do
       dialog --colors --infobox \
 "\n\nTesting pin $pin\n\nDrive = $st\n\nWatch the LED..." 10 $WIDTH > /dev/tty1
@@ -909,7 +918,8 @@ VariantMenu() {
   while true; do
     mapfile -t files < <(ls -1 "$SCRIPT_DIR"/${prefix}*.py 2>/dev/null | xargs -n1 basename)
     if [ ${#files[@]} -eq 0 ]; then
-      dialog --colors --title " $title " --msgbox "\nNo scripts found for $title." 6 $WIDTH > /dev/tty1
+      dialog --colors --title " $title " --msgbox \
+        "\nNo scripts found for $title." 6 $WIDTH > /dev/tty1
       return
     fi
     local options=() i=1
