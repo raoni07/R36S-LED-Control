@@ -88,47 +88,47 @@ color_display() {
   esac
 }
 
+swatch_paint() {
+  local color="$1" block="$2"
+  case "$color" in
+    off)   printf '%s' "\Z0${block}\Zn" ;;
+    white) printf '%s' "\Zb\Z7${block}\Zn" ;;
+    *)     printf '%s' "\Z$(color_code "$color")${block}\Zn" ;;
+  esac
+}
+
 draw_bar() {
   local color="$1"
   local cells="$2"
   local color2="${3:-}"
-  local s=""
-  local i
+  local s="" i
 
   [ "$cells" -lt 1 ] && cells=1
 
-  if [ -n "$color2" ]; then
-    local c1code c2code
-    c1code=$(color_code "$color")
-    c2code=$(color_code "$color2")
-    local i2=0
-    while [ "$i2" -lt "$cells" ]; do
-      local block_end=$((i2 + 2))
-      [ "$block_end" -gt "$cells" ] && block_end=$cells
-      local ccode
-      if [ $(( (i2 / 2) % 2 )) -eq 0 ]; then
-        ccode="$c1code"
+  if [ -n "$color2" ] && [ "$color2" != "$color" ]; then
+    [ "$cells" -lt 2 ] && cells=2
+    local step=1
+    [ "$cells" -ge 8 ] && step=2
+    local pos=0 idx=0 end block j
+    while [ "$pos" -lt "$cells" ]; do
+      end=$((pos + step))
+      [ "$end" -gt "$cells" ] && end=$cells
+      block=""
+      for ((j=pos; j<end; j++)); do block+="█"; done
+      if [ $((idx % 2)) -eq 0 ]; then
+        s+="$(swatch_paint "$color" "$block")"
       else
-        ccode="$c2code"
+        s+="$(swatch_paint "$color2" "$block")"
       fi
-      local block=""
-      local j
-      for ((j=i2; j<block_end; j++)); do
-        block+="█"
-      done
-      s+="\Z${ccode}${block}\Zn"
-      i2=$block_end
+      pos=$end
+      idx=$((idx + 1))
     done
     printf '%s' "$s"
     return
   fi
 
   for ((i=0; i<cells; i++)); do s+="█"; done
-  if [ "$color" = "off" ]; then
-    printf '%s' "\Z0${s}\Zn"
-  else
-    printf '%s' "\Z$(color_code "$color")${s}\Zn"
-  fi
+  printf '%s' "$(swatch_paint "$color" "$s")"
 }
 
 truncate_name() {
@@ -272,7 +272,9 @@ profile_bar_core() {
     local range=$((to - from))
     [ "$range" -lt 0 ] && range=0
     local cells=$((range * PROFILE_TOTAL_CELLS / 100))
-    [ "$cells" -lt 1 ] && cells=1
+    local min_cells=1
+    [ -n "$c2" ] && [ "$c2" != "$c1" ] && min_cells=2
+    [ "$cells" -lt "$min_cells" ] && cells=$min_cells
     if [ -n "$c2" ]; then
       printf '%s' "$(draw_bar "$c1" "$cells" "$c2")"
     else
@@ -338,7 +340,7 @@ ApplyLED() {
 "\n\nApplying profile:\n\n\Zb$(pretty_name "$file")\Zn\n\nPlease wait..." \
     10 $WIDTH > /dev/tty1
 
-  StopService                       # stop + pkill + release pins
+  StopService                      
   sudo rm -f "$TARGET_SCRIPT"
   sudo cp "$SCRIPT_DIR/$file" "$TARGET_SCRIPT"
   sudo chmod +x "$TARGET_SCRIPT"
@@ -370,12 +372,12 @@ RemoveLED() {
   if dialog --colors --title " Confirm " --yesno \
     "\nRemove custom LED?\n\nDevice default will take over." 8 $WIDTH > /dev/tty1; then
 
-    StopService                     # stop + pkill + release pins
+    StopService                     
 
     local nop
     nop=$(ls -1 "$SCRIPT_DIR"/*_PMIC_Controlled.py 2>/dev/null | head -n 1)
     if service_exists && [ -n "$nop" ]; then
-      # keep the service slot occupied with the "release everything" profile
+      
       sudo cp "$nop" "$TARGET_SCRIPT"
       sudo chmod +x "$TARGET_SCRIPT"
       InstallCore
@@ -446,7 +448,7 @@ GPIOExport() {
     [ -d "$GPIO_ROOT/gpio$pin" ] && return 0
     sleep 0.1
   done
-  return 1                          # busy / reserved by the DTB / does not exist
+  return 1
 }
 
 GPIOSet() {
@@ -457,7 +459,6 @@ GPIOSet() {
   else
     lvl=low
     [ "$value" = "1" ] && lvl=high
-    # "high"/"low" set direction AND level at once (no glitch to 0)
     if ! echo "$lvl" | sudo tee "$GPIO_ROOT/gpio$pin/direction" >/dev/null 2>&1; then
       echo out | sudo tee "$GPIO_ROOT/gpio$pin/direction" >/dev/null 2>&1
       echo "$value" | sudo tee "$GPIO_ROOT/gpio$pin/value" >/dev/null 2>&1
@@ -465,7 +466,6 @@ GPIOSet() {
   fi
 }
 
-# Give every pin we may have driven back to the PMIC (only pins already exported).
 ReleasePins() {
   local pin
   for pin in "${PROBE_PINS[@]}"; do
@@ -495,7 +495,7 @@ StopService() {
   fi
   sudo pkill -f batt_life_warning.py 2>/dev/null
   sleep 1
-  ReleasePins                       # a killed script leaves its pins driven
+  ReleasePins
 }
 
 StartService() {
@@ -506,17 +506,19 @@ StartService() {
 
 AskColor() {
   local title="$1" text="${2:-What color do you see on the LED?}"
-  dialog --colors --title " $title " --cancel-label "Abort" --menu \
-"\n$text" \
-    18 $WIDTH 7 \
-    "blue"   "$(draw_bar blue 12) Blue" \
-    "red"    "$(draw_bar red 12) Red" \
-    "purple" "$(draw_bar purple 12) Purple / Pink" \
-    "green"  "$(draw_bar green 12) Green" \
-    "orange" "$(draw_bar orange 12) Orange / Yellow" \
-    "white"  "$(draw_bar white 12) White" \
-    "off"    "$(draw_bar off 12) Off" \
-    2>&1 >/dev/tty1
+  local -a names=(blue red purple green orange white off)
+  local -a labels=("Blue" "Red" "Purple / Pink" "Green" "Orange / Yellow" "White" "Off")
+  local options=() i
+  for i in "${!names[@]}"; do
+    options+=("$((i + 1))" "$(draw_bar "${names[$i]}" 14)  ${labels[$i]}")
+  done
+
+  local pick
+  pick=$(dialog --colors --no-collapse --title " $title " --cancel-label "Abort" --menu \
+    "\n$text" 18 $WIDTH 7 "${options[@]}" \
+    2>&1 >/dev/tty1) || return 1
+  [ -z "$pick" ] && return 1
+  echo "${names[$((pick - 1))]}"
 }
 
 WizardAbort() {
@@ -534,7 +536,6 @@ GenerateUniversalProfile() {
   local FNAME="Custom_${HIGH_THR}_${LOW_THR}_${Z_HIGH}_${Z_MID}_${Z_LOW}.py"
   local FOUT="$SCRIPT_DIR/$FNAME"
 
-  # colors actually used by the zones (blink zones "a+b" use both)
   local need
   need=$(printf '%s\n' "${Z_HIGH//+/$'\n'}" "${Z_MID//+/$'\n'}" "${Z_LOW//+/$'\n'}" | sort -u | paste -sd, -)
 
@@ -579,7 +580,7 @@ PickColor() {
   for c in "${available[@]}"; do
     local mark=" "
     [ "$c" = "$current" ] && mark="*"
-    options+=("$i" "${mark} $(draw_bar "$c" 18)")
+    options+=("$i" "${mark} $(draw_bar "$c" 12)  $(color_display "$c")")
     i=$((i+1))
   done
 
@@ -625,6 +626,11 @@ PickZone() {
     [ -z "$c1" ] && return 1
     c2=$(PickColor "Blink - color 2" "$cur_c2" "${available[@]}") || return 1
     [ -z "$c2" ] && return 1
+    if [ "$c1" = "$c2" ]; then
+      dialog --colors --title " Invalid " --msgbox \
+        "\nPick two different colors to blink." 7 $WIDTH >/dev/tty1
+      return 1
+    fi
     echo "${c1}+${c2}"
   else
     echo "${available[$((pick - 1))]}"
@@ -802,7 +808,6 @@ WizardLED() {
   local pin st col base cancelled=0
   local -a probed=()
 
-  # 0) baseline: every pin released
   dialog --colors --infobox "\n\nAll pins released.\n\nWatch the LED..." 9 $WIDTH > /dev/tty1
   sleep 2
   base=$(AskColor "Baseline" "All pins released.\nWhat color is the LED now?")
@@ -812,7 +817,6 @@ WizardLED() {
   fi
   echo "- $base" >> "$OBS_FILE"
 
-  # 1) each pin alone (all others released): drive 0, then drive 1
   for pin in "${PROBE_PINS[@]}"; do
     GPIOExport "$pin" || continue          # busy / reserved by the DTB: skip
     for st in 0 1; do
@@ -837,7 +841,6 @@ WizardLED() {
     return
   fi
 
-  # 2) active pins = those that changed the LED vs baseline (keep the best two)
   local lines="" n
   for pin in "${probed[@]}"; do
     n=0
@@ -855,7 +858,6 @@ WizardLED() {
     return
   fi
 
-  # 3) two active pins: test every combination where both are driven
   if [ ${#active[@]} -eq 2 ]; then
     local a="${active[0]}" b="${active[1]}" sa sb
     for sa in 0 1; do
@@ -883,7 +885,6 @@ WizardLED() {
 
   WIZ_PINS=$(IFS=,; echo "${active[*]}")
 
-  # 4) which colors can the hardware actually produce?
   local -a found_colors=()
   mapfile -t found_colors < <(python3 "$CORE_SRC" --solve "$OBS_FILE" --pins "$WIZ_PINS" 2>/dev/null)
 
