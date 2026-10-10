@@ -80,7 +80,7 @@ No config files, no logs, no system files touched. Everything lives under
 
 ## Install
 
-Copy the tool folder or script to your handheld's `/roms/tools/` directory.
+Copy the .sh or script to your handheld's `/roms/tools/` directory.
 
 ---
 
