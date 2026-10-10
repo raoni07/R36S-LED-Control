@@ -1,5 +1,5 @@
 #!/bin/bash
-# R36S LED Control v0.3
+# R36S LED Control v0.4
 # Based on R36 Control.sh by southoz (dArkOSRE-R36)
 # https://github.com/southoz/dArkOSRE-R36
 
